@@ -17,6 +17,36 @@ without explicit configuration. See [the specification](docs/specification.md).
 The Makefile/Herdr fixture also produces a local candidate through actual Pi
 operator commands, with offline Linear and scripted role agents.
 
+## Process flow
+
+```mermaid
+flowchart TD
+    Issue["Select one Linear issue<br/>Read-only intake"] --> Plan["Baseline checks and planning<br/>Planner session in a VM"]
+    Plan --> PlanApproval{"Human approves<br/>the exact plan locally?"}
+    PlanApproval -->|Approve| Implement["Implement in an isolated VM"]
+    PlanApproval -->|Request changes| Plan
+    Implement --> Verify["Verify the saved candidate<br/>Trusted checks in a fresh VM"]
+    Verify --> Checks{"Required checks accepted?"}
+    Checks -->|Yes| Review["Independent reviewer session<br/>Frozen candidate and evidence"]
+    Checks -->|Failures| RepairBudget{"Automatic repair rounds left?<br/>Maximum two per approved plan"}
+    Checks -->|Required evidence unavailable| Stop["Stop for an operator decision"]
+    Review --> Findings{"Acceptance met and<br/>no blocking findings?"}
+    Findings -->|Yes| CandidateApproval{"Human approves the exact<br/>candidate and evidence locally?"}
+    Findings -->|No| RepairBudget
+    RepairBudget -->|Yes| Repair["Repair within the approved scope"]
+    RepairBudget -->|No| Stop
+    Repair --> Verify
+    CandidateApproval -->|Approve| Ready["Approved local candidate commit"]
+    CandidateApproval -->|Request changes| Plan
+    Ready --> Manual["Operator integrates, publishes<br/>and merges manually"]
+```
+
+Agents can pause for a human answer during planning, implementation, repair,
+or review. Answers and steering use the local commands or optional Telegram;
+both approval gates stay local. Every changed candidate repeats verification
+and review. Pause or interruption leaves work stopped until an explicit resume;
+cancelled runs cannot resume.
+
 ## Bring-up
 
 Use an Apple Silicon Mac with Node **26.5.x** (`.node-version` pins 26.5.0),
