@@ -1,0 +1,10 @@
+# Codex settings for implementing the factory, not its runtime configuration.
+# Reference: https://learn.chatgpt.com/docs/config-file/config-reference
+# Inherit the operator's model, reasoning effort, permissions, and credentials.
+
+# Check current primary documentation during the compatibility milestone.
+web_search = "live"
+
+[features]
+# Keep development in one agent. Factory Pi role sessions are separate concerns.
+multi_agent = false

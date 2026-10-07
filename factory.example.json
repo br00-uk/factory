@@ -1,0 +1,43 @@
+{
+  "repository": "/absolute/path/to/repository",
+  "baseRef": "main",
+  "linear": {
+    "organization": "your-organization",
+    "team": "ENG"
+  },
+  "model": {
+    "provider": "openai-codex",
+    "id": "gpt-5.5",
+    "authFile": "/absolute/path/to/.pi/agent/auth.json",
+    "maxOutputTokens": 8192
+  },
+  "budgetUsd": null,
+  "environment": {
+    "image": "public.ecr.aws/docker/library/python@sha256:a4ccdf11e73bd3f74e07f95e63f1b003467bb16cb77e942ddf45476c2cb8467c",
+    "checks": [
+      {
+        "name": "tests",
+        "argv": [
+          "python3",
+          "-B",
+          "-m",
+          "unittest",
+          "discover"
+        ],
+        "timeoutSeconds": 60
+      }
+    ]
+  },
+  "limits": {
+    "cpus": 2,
+    "memoryMb": 1024,
+    "diskGb": 2,
+    "stageSeconds": 1800,
+    "commandSeconds": 120,
+    "maxOutputBytes": 262144,
+    "maxFileBytes": 2097152,
+    "maxArtifactBytes": 33554432,
+    "maxTurns": 30,
+    "activeSeconds": 7200
+  }
+}

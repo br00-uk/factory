@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "types": ["node"],
+    "noEmitOnError": true,
+    "target": "ES2024",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true,
+    "rootDir": ".",
+    "outDir": "dist",
+    "sourceMap": true,
+    "declaration": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.ts", "scripts/**/*.ts", "pi-extension/**/*.ts", "tests/**/*.ts"]
+}

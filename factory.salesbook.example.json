@@ -1,0 +1,104 @@
+{
+  "repository": "/absolute/path/to/salesbook",
+  "baseRef": "main",
+  "linear": {
+    "organization": "neverzero",
+    "project": {
+      "name": "Salesbook",
+      "url": "https://linear.app/neverzero/project/salesbook-fd9671bd1086/overview"
+    }
+  },
+  "model": {
+    "provider": "openai-codex",
+    "id": "gpt-5.5",
+    "authFile": "/absolute/path/to/.pi/agent/auth.json",
+    "maxOutputTokens": 8192
+  },
+  "budgetUsd": null,
+  "environment": {
+    "image": "public.ecr.aws/docker/library/python@sha256:715a063709d47191add11cccf48b4de0cdf220302070ca78d10c249f721f1da6",
+    "checks": [
+      {
+        "name": "go-tests",
+        "argv": [
+          "go",
+          "test",
+          "./..."
+        ],
+        "timeoutSeconds": 600
+      },
+      {
+        "name": "go-vet",
+        "argv": [
+          "go",
+          "vet",
+          "./..."
+        ],
+        "timeoutSeconds": 600
+      },
+      {
+        "name": "web-tests",
+        "argv": [
+          "sh",
+          "-c",
+          "cd apps/web && npm run typecheck && npm test"
+        ],
+        "timeoutSeconds": 600
+      }
+    ],
+    "toolchain": {
+      "argv": [
+        "python3",
+        "-I",
+        "-S",
+        "/factory/prepare-toolchain.py",
+        "[{\"url\":\"https://go.dev/dl/go1.27.1.linux-arm64.tar.gz\",\"sha256\":\"3450b45a3f9ee8568792736a5c5e70a1f2e9b36c35a8f74958c03e51d7d92bec\",\"destination\":\"/usr/local/go\"},{\"url\":\"https://nodejs.org/dist/v26.5.0/node-v26.5.0-linux-arm64.tar.gz\",\"sha256\":\"308e5fe89a82461ba5a6cf15ff5221b2cdbd7ae87600aa72bb3c3fbdc66412d1\",\"destination\":\"/usr/local/node\"}]"
+      ],
+      "timeoutSeconds": 600,
+      "allowHosts": [
+        "go.dev",
+        "dl.google.com",
+        "nodejs.org"
+      ]
+    },
+    "env": {
+      "PATH": "/usr/local/go/bin:/usr/local/node/bin:/usr/local/bin:/usr/bin:/bin",
+      "GOTOOLCHAIN": "local",
+      "GOCACHE": "/var/cache/factory/go-build",
+      "GOMODCACHE": "/var/cache/factory/go-mod",
+      "GOPROXY": "https://proxy.golang.org",
+      "GOSUMDB": "sum.golang.org",
+      "CI": "true",
+      "NPM_CONFIG_CACHE": "/var/cache/factory/npm"
+    },
+    "dependencies": {
+      "argv": [
+        "sh",
+        "-c",
+        "set -eu; go mod download; cd apps/web; npm ci --ignore-scripts --no-audit --no-fund"
+      ],
+      "timeoutSeconds": 600,
+      "allowHosts": [
+        "proxy.golang.org",
+        "sum.golang.org",
+        "storage.googleapis.com",
+        "registry.npmjs.org"
+      ],
+      "paths": [
+        "apps/web/node_modules"
+      ]
+    }
+  },
+  "limits": {
+    "cpus": 2,
+    "memoryMb": 4096,
+    "diskGb": 8,
+    "stageSeconds": 2700,
+    "commandSeconds": 600,
+    "maxOutputBytes": 262144,
+    "maxFileBytes": 2097152,
+    "maxArtifactBytes": 33554432,
+    "maxTurns": 30,
+    "activeSeconds": 7200
+  }
+}

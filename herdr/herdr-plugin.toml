@@ -1,0 +1,12 @@
+id = "factory.local"
+name = "Local Factory"
+version = "0.1.0"
+min_herdr_version = "0.9.1"
+description = "Open the human-gated local factory workspace"
+platforms = ["macos"]
+
+[[actions]]
+id = "open"
+title = "Open factory"
+contexts = ["workspace"]
+command = ["node", "../dist/src/cli.js", "up"]
