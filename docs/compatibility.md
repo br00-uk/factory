@@ -128,6 +128,20 @@ Registered persistent caches now use `/var/cache/factory` instead.
 The guest Git repository is built from transferred source, with its own index,
 objects and controlled configuration; host shared Git metadata is never imported.
 
+The Migratory profile (`factory.migratory.example.json`, 7 October 2026) pins
+the same Debian Python image, Go 1.26.5 (hash from the primary Go download
+metadata) and `go mod download`, and registers that repository's own gate —
+`go build ./...`, `go vet ./...`, `go test -race ./...` — as checks. The
+repository is registered and `make validate` exists to prove the profile in a
+fresh guest, but validation has **not** run yet: two `make setup` attempts
+from a sandboxed agent shell failed at image preparation with
+`Get "https://public.ecr.aws/v2/": dial tcp 99.83.145.10:443: connect:
+connection refused` while the same host shell reached that address directly.
+Run `make setup` and `make validate` from an interactive Herdr pane to settle
+whether the sandbox or the registry allowlist refused the pull. The offline
+baseline defect this surfaced (one tenancy test failing instead of skipping)
+is fixed in Migratory T057.
+
 ## Remaining validation
 
 - Live read-only Linear issue/context JSON and active organization identity.

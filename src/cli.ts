@@ -2,6 +2,7 @@
 import { ROOT, loadConfig, paths, ConfigSchema, credentialEnvs } from './config.js';
 import { setup } from './install.js';
 import { doctor } from './doctor.js';
+import { validate } from './validate.js';
 import { serve } from './supervisor.js';
 import { parseCommand, send } from './control.js';
 import { clean } from './safety.js';
@@ -18,6 +19,7 @@ try {
   const [action,...args]=process.argv.slice(2);
   if(action==='setup-integrations')await setup(ROOT);
   else if(action==='doctor')await doctor(ROOT);
+  else if(action==='validate')await validate(ROOT);
   else if(action==='up')await up(ROOT);
   else if(action==='down')await down(ROOT);
   else if(action==='serve'){

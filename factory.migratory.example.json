@@ -1,0 +1,98 @@
+{
+  "repository": "/absolute/path/to/migratory",
+  "baseRef": "main",
+  "linear": {
+    "organization": "neverzero",
+    "team": "MIG"
+  },
+  "model": {
+    "provider": "openai-codex",
+    "id": "gpt-5.5",
+    "authFile": "/absolute/path/to/.pi/agent/auth.json",
+    "maxOutputTokens": 8192
+  },
+  "budgetUsd": null,
+  "environment": {
+    "image": "public.ecr.aws/docker/library/python@sha256:715a063709d47191add11cccf48b4de0cdf220302070ca78d10c249f721f1da6",
+    "checks": [
+      {
+        "name": "go-build",
+        "argv": [
+          "go",
+          "build",
+          "./..."
+        ],
+        "timeoutSeconds": 1200
+      },
+      {
+        "name": "go-vet",
+        "argv": [
+          "go",
+          "vet",
+          "./..."
+        ],
+        "timeoutSeconds": 1200
+      },
+      {
+        "name": "go-test-race",
+        "argv": [
+          "go",
+          "test",
+          "-race",
+          "./..."
+        ],
+        "timeoutSeconds": 2400
+      }
+    ],
+    "toolchain": {
+      "argv": [
+        "python3",
+        "-I",
+        "-S",
+        "/factory/prepare-toolchain.py",
+        "[{\"url\":\"https://go.dev/dl/go1.26.5.linux-arm64.tar.gz\",\"sha256\":\"fe4789e92b1f33358680864bbe8704289e7bb5fc207d80623c308935bd696d49\",\"destination\":\"/usr/local/go\"}]"
+      ],
+      "timeoutSeconds": 600,
+      "allowHosts": [
+        "go.dev",
+        "dl.google.com"
+      ]
+    },
+    "env": {
+      "PATH": "/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin",
+      "GOTOOLCHAIN": "local",
+      "GOCACHE": "/var/cache/factory/go-build",
+      "GOMODCACHE": "/var/cache/factory/go-mod",
+      "GOPROXY": "https://proxy.golang.org",
+      "GOSUMDB": "sum.golang.org",
+      "GOFLAGS": "-buildvcs=false",
+      "CI": "true"
+    },
+    "dependencies": {
+      "argv": [
+        "sh",
+        "-c",
+        "set -eu; go mod download"
+      ],
+      "timeoutSeconds": 900,
+      "allowHosts": [
+        "proxy.golang.org",
+        "sum.golang.org",
+        "storage.googleapis.com"
+      ],
+      "paths": []
+    }
+  },
+  "limits": {
+    "cpus": 4,
+    "memoryMb": 8192,
+    "diskGb": 12,
+    "stageSeconds": 7200,
+    "commandSeconds": 3600,
+    "maxOutputBytes": 1048576,
+    "maxFileBytes": 2097152,
+    "maxArtifactBytes": 33554432,
+    "maxTurns": 30,
+    "activeSeconds": 14400
+  }
+}

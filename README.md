@@ -110,12 +110,33 @@ From another repository, after the factory is installed, use a Herdr terminal:
 export FACTORY_ROOT=/Users/dan/Developer/br00/factory
 node "$FACTORY_ROOT/dist/src/cli.js" register "$PWD"
 # Configure that repository's Linear scope, environment and checks in
-# "$FACTORY_ROOT/factory.local.json"; the Salesbook profile is supplied above.
+# "$FACTORY_ROOT/factory.local.json"; the Salesbook and Migratory profiles
+# are supplied above and below.
 make -C "$FACTORY_ROOT" setup
+make -C "$FACTORY_ROOT" validate
 "$FACTORY_ROOT/.cache/tools/linear-tui" auth login
 make -C "$FACTORY_ROOT" doctor
 make -C "$FACTORY_ROOT" up
 ```
+
+`make validate` proves the registered profile before any issue exists: it
+snapshots the base commit, prepares the toolchain and dependencies in a fresh
+VM, runs every registered check with egress denied, and confirms the checks
+leave tracked source unchanged. It needs neither Linear, Herdr nor a model.
+Private evidence lands in `.factory/validation/<repository>-<uuid>.json`; it
+is not run evidence. A required check that fails here fails every run's
+baseline too, so fix the repository (or register an explicit
+`acceptBaselineFailure`) before `make up`.
+
+[factory.migratory.example.json](factory.migratory.example.json) is the
+profile for the Migratory Go monolith: the same pinned Debian image, a
+checksum-verified Go 1.26.5 archive, `go mod download` under the Go proxy
+allowlist, and that repository's own gate as checks — `go build ./...`,
+`go vet ./...`, `go test -race ./...`. Its integration tests skip when
+Postgres, Temporal, S3 and Vault are unreachable, which is exactly the
+denied-egress guest. The `linear.team` key in that profile is a placeholder
+until the Migratory team exists in Linear; `doctor` does not check it, but
+issue intake rejects identifiers outside it.
 
 Create or select a Linear issue describing the change and acceptance criteria.
 In the factory Pi pane, `/factory plan current` starts planning that issue.
@@ -275,6 +296,7 @@ changes, or a changed factory build, require explicit revision/reapproval.
 make help
 make check          # type checking, durable gates, real VM/Pi boundary, fixture
 make compatibility  # real VM/Pi boundary and fixture only; no paid model calls
+make validate       # registered checks on the base commit in a fresh VM; no model
 node dist/src/cli.js cleanup  # remove unreferenced source artifacts while idle
 ```
 
