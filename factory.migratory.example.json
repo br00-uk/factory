@@ -3,7 +3,7 @@
   "baseRef": "main",
   "linear": {
     "organization": "neverzero",
-    "team": "MIG"
+    "team": "NEV"
   },
   "model": {
     "provider": "openai-codex",

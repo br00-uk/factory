@@ -65,9 +65,10 @@ that cannot be removed blocks execution.
 Not yet verified in this revision: a live model-driven run against a real
 repository (the fixture roles are scripted), live Linear reads, and the Herdr
 workspace path with the detached-supervisor refusal. The Migratory profile
-was validated to the point of registering: its gate is green offline since
-Migratory T057, and `factory init` runs it in a workspace as part of
-registration.
+was registered end to end with `factory init` (team `NEV`): detection, sandbox
+proof, `go build`/`go vet`/`go test -race` green in a sandboxed workspace
+against the branch carrying Migratory T057, detached supervisor start and
+stop. Against Migratory `main` the same gate reports only the T057 failure.
 
 ## Historical record: microVM revision (6 October 2026)
 

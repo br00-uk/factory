@@ -140,9 +140,8 @@ repository (or register an explicit `acceptBaselineFailure`) first.
 [factory.migratory.example.json](factory.migratory.example.json) and
 [factory.salesbook.example.json](factory.salesbook.example.json) are the
 profiles `factory init` produces for those repositories, kept as references.
-The `linear.team` key in the Migratory profile is a placeholder until that
-team exists in Linear; `doctor` does not check it, but issue intake rejects
-identifiers outside it.
+Issue intake rejects identifiers outside the configured `linear.team`
+(`NEV` for both profiles); `doctor` does not check the key itself.
 
 Create or select a Linear issue describing the change and acceptance criteria,
 then `/factory plan ENG-42` (or `plan current` when linear-tui shows it).
