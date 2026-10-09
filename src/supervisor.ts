@@ -8,7 +8,7 @@ import { RequestSchema, type Request } from './models.js';
 import { Linear } from './linear.js';
 import { Workflow } from './workflow.js';
 import { runAgent } from './pi.js';
-import { stopRecordedVMs } from './smol.js';
+import { stopRecordedWorkspaces, resetSandbox } from './host.js';
 import { cleanup } from './artifacts.js';
 import { MAX_MESSAGE } from './control.js';
 import { Telegram } from './telegram.js';
@@ -31,7 +31,7 @@ export async function serve(root: string, config:Config, agent = runAgent): Prom
         if(waiting)store.transition(run,'awaiting_input');
       }
       await telegram?.stop();
-      await stopRecordedVMs(store,owner);
+      await stopRecordedWorkspaces(store,owner);
     }catch(e){failure=e;}
     finally{
       await new Promise<void>(resolve=>{
@@ -39,17 +39,18 @@ export async function serve(root: string, config:Config, agent = runAgent): Prom
         for(const socket of sockets)socket.destroy();
       });
       await unlink(p.socket).catch(()=>undefined);
+      await resetSandbox().catch(()=>undefined);
       store.close();await unlock();
     }
     if(failure){
-      console.error(clean(`Shutdown could not confirm guest cleanup: ${(failure as Error).message}. The foreground supervisor will exit; recovery must confirm the engine reaped its recorded VMs.`));
-      // Terminate only this dedicated supervisor process. Non-detached guests are
-      // tied to it; a later owner still verifies deletion before admitting work.
+      console.error(clean(`Shutdown could not confirm workspace cleanup: ${(failure as Error).message}. The supervisor will exit; recovery confirms recorded workspaces are stopped before admitting work.`));
+      // Terminate only this dedicated supervisor process. A later owner still
+      // verifies recorded workspaces are gone before admitting work.
       process.exit(1);
     }
   };
   try {
-    store.interrupt();await stopRecordedVMs(store,owner);
+    store.interrupt();await stopRecordedWorkspaces(store,owner);
     workflow=new Workflow(config,store,new Linear(config,root),owner,root,agent,()=>loadConfig(root));
     if(config.telegram)telegram=new Telegram(config.telegram,store,workflow);
     try{const stat=await lstat(p.socket);if(!stat.isSocket())throw new Error('Control path is not a socket');await unlink(p.socket);}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}

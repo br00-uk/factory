@@ -1,20 +1,22 @@
 import { join } from 'node:path';
-import { readFile, unlink } from 'node:fs/promises';
+import { readFile, unlink, open } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
 import { doctor } from './doctor.js';
-import { paths, credentialEnvs, configHash } from './config.js';
+import { paths, credentialEnvs, configHash, type Config } from './config.js';
 import { atomicWrite, command, fingerprint, hostEnvironment, requireSuccess } from './safety.js';
 import { send } from './control.js';
 import { lock } from './lock.js';
 import { Store } from './storage.js';
-import { stopRecordedVMs } from './smol.js';
+import { stopRecordedWorkspaces } from './host.js';
 import { Linear } from './linear.js';
 
 interface Workspace {id:string;label:string;supervisor:string;linear:string;operator:string;socket:string}
+interface Health {root:string;pid:number;pane:string|null;configHash:string}
 class UnconfirmedSupervisor extends Error {}
 const quote=(value:string):string=>`'${value.replaceAll("'", "'\\''")}'`;
 const sleep=(ms:number)=>new Promise<void>(resolve=>setTimeout(resolve,ms));
 async function herdr(root:string,args:string[],socket?:string):Promise<any> {
-  if(process.env.HERDR_ENV!=='1')throw new Error('Run make up inside Herdr (HERDR_ENV=1); the factory does not control a focused session from outside it');
+  if(process.env.HERDR_ENV!=='1')throw new Error('This Herdr workspace was opened from a Herdr pane; manage its panes from Herdr (HERDR_ENV=1)');
   const env=hostEnvironment({HERDR_ENV:'1',...(socket??process.env.HERDR_SOCKET_PATH?{HERDR_SOCKET_PATH:socket??process.env.HERDR_SOCKET_PATH!}:{})});
   const output=requireSuccess(await command([join(paths(root).tools,'herdr'),...args],{env,timeoutMs:30_000})).toString();
   if(!output.trim()){
@@ -27,6 +29,11 @@ async function herdr(root:string,args:string[],socket?:string):Promise<any> {
 async function record(root:string):Promise<Workspace|undefined> {
   try{return JSON.parse(await readFile(join(paths(root).state,'workspace.json'),'utf8')) as Workspace;}
   catch(e){if((e as NodeJS.ErrnoException).code==='ENOENT')return undefined;throw e;}
+}
+/** The supervisor's health answer when one owns this installation, else undefined. */
+export async function supervisorHealth(root:string):Promise<Health|undefined> {
+  try{const health=await send({command:'health'},root) as Health;return health.root===root?health:undefined;}
+  catch{return undefined;}
 }
 async function operatorReady(root:string,workspace:Workspace):Promise<void>{
   const deadline=Date.now()+10000;let failure='Owned operator pane is not running the factory Pi profile';
@@ -54,23 +61,56 @@ async function stopSupervisor(root:string):Promise<void>{
   if(!unlock)throw new Error('Supervisor still owns its lock; termination unconfirmed');
   try {
     const store=new Store(p.state);
-    try{store.interrupt();const owner=store.setting('owner');if(owner)await stopRecordedVMs(store,owner);}finally{store.close();}
+    try{store.interrupt();const owner=store.setting('owner');if(owner)await stopRecordedWorkspaces(store,owner);}finally{store.close();}
   }finally{await unlock();}
 }
 async function supervisorReady(root:string,workspace:Workspace,expectedConfig:string):Promise<void>{
-  let health:{root:string;pane:string|null;configHash:string};
-  try{health=await send({command:'health'},root) as typeof health;}
+  let health:Health;
+  try{health=await send({command:'health'},root) as Health;}
   catch(e){throw new UnconfirmedSupervisor(`Supervisor ownership unavailable: ${(e as Error).message}`);}
   if(health.root!==root||health.pane!==workspace.supervisor)throw new UnconfirmedSupervisor('The ready supervisor does not belong to this workspace pane');
   if(health.configHash!==expectedConfig)throw new Error('Supervisor configuration changed; run make down then make up');
   const result=await herdr(root,['pane','list','--workspace',workspace.id],workspace.socket);
   if(!result.panes.some((pane:{pane_id:string})=>pane.pane_id===workspace.supervisor))throw new Error('Owned supervisor pane is missing or moved');
 }
+/** Start the supervisor as a detached background process (no Herdr), logging to
+ *  .factory/supervisor.log, and wait for its control socket. Returns false when a
+ *  supervisor with the same configuration is already serving this installation. */
+export async function startDetachedSupervisor(root:string,config:Config):Promise<boolean>{
+  const p=paths(root);
+  const existing=await supervisorHealth(root);
+  if(existing){
+    if(existing.configHash!==configHash(config))throw new Error('A supervisor with different configuration is running; run factory down first');
+    return false;
+  }
+  for(const name of credentialEnvs(config))if(!process.env[name])throw new Error(`Set the credential environment reference ${name} before starting the supervisor`);
+  const log=await open(p.log,'a',0o600);
+  try{
+    const child=spawn(process.execPath,[join(root,'dist/src/cli.js'),'serve'],{cwd:root,detached:true,stdio:['ignore',log.fd,log.fd],
+      env:{...process.env,FACTORY_DETACHED:'1'}});
+    child.unref();
+    for(let n=0;n<100;n++){
+      const health=await supervisorHealth(root);
+      if(health){if(health.configHash!==configHash(config))throw new Error('The started supervisor loaded different configuration');return true;}
+      if(child.exitCode!==null)break;
+      await sleep(100);
+    }
+    const tail=(await readFile(p.log,'utf8').catch(()=>'')).split('\n').filter(Boolean).slice(-5).join('\n');
+    throw new Error(`Supervisor failed readiness; see ${p.log}${tail?`:\n${tail}`:''}`);
+  }finally{await log.close();}
+}
 export async function up(root:string):Promise<void> {
+  const inHerdr=process.env.HERDR_ENV==='1';
+  if(!inHerdr){
+    const config=await doctor(root,{herdr:false,requireLinear:false});
+    const started=await startDetachedSupervisor(root,config);
+    console.log(`${started?'Factory supervisor started':'Factory supervisor already running'} (log: ${paths(root).log}). Use /factory commands from a Pi session with the factory extension, or factory status here. No run has started.`);
+    return;
+  }
   const p=paths(root);const launchUnlock=await lock(join(p.state,'launcher'));
   let created:Workspace|undefined;let handoff:string|undefined;let foreignSupervisor=false;
   try {
-    const config=await doctor(root);const existing=await record(root);
+    const config=await doctor(root,{herdr:true});const existing=await record(root);
     if(existing){
       const live=await herdr(root,['workspace','get',existing.id],existing.socket);
       if(live.workspace?.label!==existing.label)throw new Error('Stored workspace ownership cannot be confirmed');
@@ -78,6 +118,7 @@ export async function up(root:string):Promise<void> {
       await new Linear(config,root).ready();await operatorReady(root,existing);
       console.log(`Factory workspace ${existing.id} already ready. State: ${p.state}`);return;
     }
+    if(await supervisorHealth(root))throw new Error('A detached supervisor is running; run factory down before opening the Herdr workspace');
     // Refuse an unrecorded foreground supervisor before creating any new UI.
     const supervisorUnlock=await lock(p.state);await supervisorUnlock();
     const label=`Factory ${fingerprint(root).slice(0,8)}`;
@@ -129,11 +170,14 @@ export async function down(root:string):Promise<void> {
     await stopSupervisor(root);
     const workspace=await record(root);
     if(workspace){
-      const live=await herdr(root,['workspace','get',workspace.id],workspace.socket);
-      if(live.workspace?.label!==workspace.label)throw new Error('Workspace ownership uncertain; refusing to close it');
-      await closeOwned(root,workspace);
-      await unlink(join(p.state,'workspace.json'));
+      if(process.env.HERDR_ENV!=='1'){console.warn('The Herdr workspace record remains; run make down from a Herdr pane to close its panes.');}
+      else{
+        const live=await herdr(root,['workspace','get',workspace.id],workspace.socket);
+        if(live.workspace?.label!==workspace.label)throw new Error('Workspace ownership uncertain; refusing to close it');
+        await closeOwned(root,workspace);
+        await unlink(join(p.state,'workspace.json'));
+      }
     }
-    console.log('Factory supervisor and recorded guest execution stopped. Saved state/evidence retained.');
+    console.log('Factory supervisor and recorded workspace execution stopped. Saved state/evidence retained.');
   }finally{await launcherUnlock();}
 }

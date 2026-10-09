@@ -1,38 +1,32 @@
 import { basename, join } from 'node:path';
-import { Machine } from 'smolmachines';
 import { loadConfig, paths } from './config.js';
 import { baseCommit, snapshotRepository } from './git.js';
-import { Guest, LOCAL, deleteLocalMachine } from './smol.js';
-import { atomicWrite, clean, fingerprint, privateDirectory } from './safety.js';
+import { Workspace, hostRunner } from './host.js';
+import { atomicWrite, clean, privateDirectory } from './safety.js';
 
 interface ValidatedCheck { name:string; argv:string[]; required:boolean; started:string; ended:string;
   code:number|null; outcome:'passed'|'failed'|'unavailable'|'skipped'; stdout:string; stderr:string }
 
 // Prove the registered environment and check profile against the base commit in
-// one fresh guest, without Linear, Herdr, a model, or a run record: toolchain
-// and dependency preparation, every registered check under denied egress, then
-// a frozen export showing the checks leave tracked source unchanged. This is
-// the "does the factory work for this repository" answer before any issue is
-// planned. The evidence file is private and is not run evidence.
+// one fresh sandboxed workspace, without Linear, Herdr, a model, or a run record:
+// dependency preparation, every registered check with egress denied, then a frozen
+// export showing the checks leave tracked source unchanged. This is the "does the
+// factory work for this repository" answer before any issue is planned. The
+// evidence file is private and is not run evidence.
 export async function validate(root:string):Promise<void> {
   const config=await loadConfig(root);const p=paths(root);
   const base=await baseCommit(config);
   const snapshot=await snapshotRepository(config,base,p.artifacts);
-  const owner=`factory-validate-${fingerprint(root).slice(0,16)}`;
-  for(const machine of await Machine.list(LOCAL,{labels:{owner}})){
-    if(machine.labels.owner!==owner)throw new Error('Validation VM ownership uncertain');
-    await deleteLocalMachine(machine.name,root);
-  }
   const checks:ValidatedCheck[]=[];let exported:string|undefined;let failure:string|undefined;
-  console.log(`Validating ${config.repository} at ${base} (source ${snapshot.hash.slice(0,16)}) in a fresh guest`);
-  const guest=await Guest.create(config,owner,'validation');
+  console.log(`Validating ${config.repository} at ${base} (source ${snapshot.hash.slice(0,16)}) in a fresh sandboxed workspace`);
+  const workspace=await Workspace.create(config,'factory-validate','validation',undefined,root);
   try{
-    await guest.import(snapshot);await guest.prepareDependencies();
+    await workspace.import(snapshot);await workspace.prepareDependencies();
     for(const check of config.environment.checks){
       const started=new Date().toISOString();
-      if(guest.stopped){checks.push({name:check.name,argv:check.argv,required:check.required,started,ended:started,code:null,outcome:'skipped',stdout:'',stderr:'Not run: preceding guest execution unavailable'});continue;}
+      if(workspace.stopped){checks.push({name:check.name,argv:check.argv,required:check.required,started,ended:started,code:null,outcome:'skipped',stdout:'',stderr:'Not run: preceding workspace execution unavailable'});continue;}
       try{
-        const result=await guest.execute(check.argv,{timeout:check.timeoutSeconds});
+        const result=await workspace.execute(check.argv,{timeout:check.timeoutSeconds});
         const unavailable=result.code===126||result.code===127;
         checks.push({name:check.name,argv:check.argv,required:check.required,started,ended:new Date().toISOString(),
           code:unavailable?null:result.code,outcome:unavailable?'unavailable':result.code===0?'passed':'failed',stdout:result.stdout,stderr:result.stderr});
@@ -42,13 +36,13 @@ export async function validate(root:string):Promise<void> {
       const last=checks.at(-1)!;
       console.log(`${last.name}: ${last.outcome}${last.code?` (exit ${last.code})`:''} [${Math.round((Date.parse(last.ended)-Date.parse(last.started))/1000)}s]`);
     }
-    if(!guest.stopped)exported=(await guest.export(p.artifacts)).hash;
+    if(!workspace.stopped)exported=(await workspace.export(p.artifacts)).hash;
   }catch(e){failure=(e as Error).message;}
-  finally{await guest.close();}
+  finally{await workspace.close();}
   const directory=join(p.state,'validation');await privateDirectory(directory);
   const file=join(directory,`${basename(config.repository)}-${crypto.randomUUID()}.json`);
-  await atomicWrite(file,JSON.stringify({repository:config.repository,base,source:snapshot.hash,exported,image:config.environment.image,
-    environment:config.environment,limits:config.limits,preparation:guest.preparation,checks,failure,verified:new Date().toISOString()},null,1));
+  await atomicWrite(file,JSON.stringify({repository:config.repository,base,source:snapshot.hash,exported,runner:hostRunner(),
+    environment:config.environment,limits:config.limits,preparation:workspace.preparation,checks,failure,verified:new Date().toISOString()},null,1));
   const problems:string[]=[];
   if(failure)problems.push(`Validation stopped: ${failure}`);
   for(const check of checks)if(check.required&&check.outcome!=='passed')problems.push(`${check.name}: ${check.outcome}${check.stderr?` — ${check.stderr.trim().split('\n').at(-1)}`:''}`);

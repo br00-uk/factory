@@ -1,19 +1,18 @@
 import { chmod, readFile, copyFile, mkdtemp, rm, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { Machine } from 'smolmachines';
-import { DEFAULT_IMAGE, paths, ConfigSchema, type Config } from './config.js';
-import { atomicWrite, command, hash, fingerprint, privateDirectory, requireSuccess } from './safety.js';
-import { Guest, LOCAL, deleteLocalMachine } from './smol.js';
-import { baseCommit,snapshotRepository } from './git.js';
+import { homedir, tmpdir } from 'node:os';
+import { paths, ConfigSchema, type Config } from './config.js';
+import { atomicWrite, command, hash, privateDirectory, requireSuccess } from './safety.js';
+import { Workspace, hostRunner, localAvailability } from './host.js';
+import { storeSnapshot } from './artifacts.js';
 
+// Herdr is optional (used only by make up inside a Herdr session); linear-tui is
+// the read-only issue intake. Both are hash-pinned release binaries.
 export const pinnedTools = {
   herdr: {url:'https://github.com/herdrdev/herdr/releases/download/v0.9.1/herdr-macos-aarch64',
     hash:'5fc7a7e7adfaca56fa80aa89dcb025693357268dab8285b9ce2d08a2313c89de',version:'0.9.1'},
   'linear-tui': {url:'https://github.com/k1-c/linear-tui/releases/download/v0.13.0/linear-tui-aarch64-apple-darwin.tar.gz',
     hash:'5902b360341ea02bc71f9de3cfc1294cc4d29c175bf37a990e444db6171e4686',version:'0.13.0'},
-  smol:{url:'https://github.com/smol-machines/smol/releases/download/v1.22.2/smol-1.22.2-darwin-arm64.tar.gz',
-    hash:'9e60f7100e28a992bac5db9282d0e019757e5229ab5946db770c98f2bcc48efe',version:'1.22.2'},
 } as const;
 export async function download(url: string, expected: string): Promise<Buffer> {
   const response = await fetch(url,{signal:AbortSignal.timeout(60_000)});
@@ -40,13 +39,10 @@ export async function installTools(root: string): Promise<void> {
       const temp=await mkdtemp(join(tmpdir(),'factory-tool-'));
       try {
         const archive=join(temp,'tool.tar.gz');await atomicWrite(archive,data);
-        const entry=name==='smol'?'smol-1.22.2-darwin-arm64/smol-bin':'linear-tui';
-        const names=requireSuccess(await command(['/usr/bin/tar','-tzf',archive,...(name==='smol'?[entry]:[])])).toString().trim().split('\n');
-        if(names.length!==1 || names[0]!.replace(/^\.\//,'')!==entry)throw new Error('Unexpected pinned tool archive layout');
-        // The smol CLI is used only for local record deletion, which needs no
-        // boot/runtime bundle. Never extract its guest rootfs onto the host.
-        requireSuccess(await command(['/usr/bin/tar','-xzf',archive,'-C',temp,entry]));
-        const file=join(temp,entry);const stat=await lstat(file);
+        const names=requireSuccess(await command(['/usr/bin/tar','-tzf',archive])).toString().trim().split('\n');
+        if(names.length!==1 || names[0]!.replace(/^\.\//,'')!=='linear-tui')throw new Error('Unexpected pinned tool archive layout');
+        requireSuccess(await command(['/usr/bin/tar','-xzf',archive,'-C',temp,'linear-tui']));
+        const file=join(temp,'linear-tui');const stat=await lstat(file);
         if(!stat.isFile() || stat.isSymbolicLink())throw new Error('Unexpected binary type');
         await atomicWrite(destination,await readFile(file));
       } finally {await rm(temp,{recursive:true,force:true});}
@@ -54,31 +50,35 @@ export async function installTools(root: string): Promise<void> {
     await chmod(destination,0o700);await atomicWrite(marker,hash(await readFile(destination)));
   }
 }
+/** Prove the OS sandbox on this host with a throwaway workspace: a command runs,
+ *  a write outside the workspace is refused, credentials are unreadable, and the
+ *  network is unreachable. Records the verified runner in .factory/host.json. */
+export async function verifySandbox(config: Config, root: string): Promise<void> {
+  const availability=localAvailability();if(!availability.available)throw new Error(`Host sandbox unavailable: ${availability.reason}`);
+  const p=paths(root);const outside=join(p.state,`sandbox-probe-${crypto.randomUUID()}`);
+  const workspace=await Workspace.create(config,'factory-setup','setup',undefined,root);
+  try {
+    await workspace.import(await storeSnapshot(p.artifacts,[{path:'probe.txt',mode:'100644',data:Buffer.from('probe\n')}],config.limits));
+    const inside=await workspace.execute(['sh','-c','cat probe.txt && echo written > generated.txt']);
+    if(inside.code!==0||!inside.stdout.includes('probe'))throw new Error(`Sandboxed command failed: ${inside.stderr.slice(0,500)}`);
+    const escape=await workspace.execute(['sh','-c',`echo escaped > '${outside.replaceAll("'","'\\''")}'`]);
+    let escaped=false;try{await lstat(outside);escaped=true;}catch{/* refused as required */}
+    if(escaped||escape.code===0){await rm(outside,{force:true});throw new Error('Sandbox allowed a write outside the workspace; refusing to proceed');}
+    const credentials=[join(homedir(),'.pi/agent/auth.json'),join(homedir(),'.ssh'),join(homedir(),'.aws/credentials')];
+    const secret=await workspace.execute(['sh','-c',credentials.map(path=>`test -r '${path}' && echo READABLE '${path}'`).join('; ')]);
+    if(secret.stdout.includes('READABLE'))throw new Error(`Sandbox exposed host credentials (${secret.stdout.trim()}); refusing to proceed`);
+    const network=await workspace.execute(['sh','-c','curl -s --max-time 5 -o /dev/null https://example.com && echo REACHED || echo denied']);
+    if(network.stdout.includes('REACHED'))throw new Error('Sandbox allowed network egress; refusing to proceed');
+  } finally { await workspace.close(); }
+  await atomicWrite(join(p.state,'host.json'),JSON.stringify({runner:hostRunner(),platform:`${process.platform}-${process.arch}`,verified:new Date().toISOString()}));
+}
 export async function setup(root: string): Promise<void> {
-  if(process.platform!=='darwin' || process.arch!=='arm64')throw new Error('Apple Silicon macOS is required');
-  const p=paths(root);await privateDirectory(p.state);await privateDirectory(p.artifacts);await privateDirectory(p.sessions);
+  if(process.platform!=='darwin' || process.arch!=='arm64')throw new Error('Apple Silicon macOS is required for the pinned tool binaries');
+  const p=paths(root);
+  for(const directory of [p.state,p.artifacts,p.sessions,p.work,p.cache])await privateDirectory(directory);
   await installTools(root);
   try {await copyFile(join(root,'factory.example.json'),p.config,1);await chmod(p.config,0o600);} catch(e) {if((e as NodeJS.ErrnoException).code!=='EEXIST')throw e;}
   const config=ConfigSchema.parse(JSON.parse(await readFile(p.config,'utf8')));
-  const available=Machine.localAvailability();if(!available.available)throw new Error(`Local smol unavailable: ${JSON.stringify(available)}`);
-  const image=config.environment.image || DEFAULT_IMAGE;
-  const owner=`factory-setup-${fingerprint(root).slice(0,16)}`;
-  for(const machine of await Machine.list(LOCAL,{labels:{owner}})) {
-    if(machine.labels.owner!==owner)throw new Error('Setup VM ownership uncertain');
-    await deleteLocalMachine(machine.name,root);
-  }
-  const guest=await Guest.create(config,owner,'image');
-  try {
-    const result=await guest.execute(['python3','-I','-S','-c','import sys,platform;print(sys.version);print(platform.machine())']);
-    if(result.code!==0)throw new Error('Guest image lacks the required Python helper runtime');
-    let source:string|undefined;
-    if(config.environment.dependencies){
-      const snapshot=await snapshotRepository(config,await baseCommit(config),p.artifacts);source=snapshot.hash;
-      await guest.import(snapshot);await guest.prepareDependencies();
-      if((await guest.export(p.artifacts)).hash!==source)throw new Error('Dependency preparation changed tracked source');
-    }
-    await atomicWrite(join(p.state,'image.json'),JSON.stringify({image,toolchain:fingerprint(config.environment.toolchain??null),source,
-      verified:new Date().toISOString(),smol:'1.22.2',platform:'linux/arm64'}));
-  } finally {await guest.close();}
-  console.log(`Setup complete. Configure ${p.config}, model credential reference, and Linear authentication; then make doctor.`);
+  await verifySandbox(config,root);
+  console.log(`Setup complete. Run factory init inside the target repository, or configure ${p.config} by hand; then make doctor.`);
 }

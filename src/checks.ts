@@ -1,13 +1,15 @@
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import { relative, resolve } from 'node:path';
 import { z } from 'zod';
-import { paths, type Config } from './config.js';
+import { hostPlatform, paths, type Config } from './config.js';
+import { hostRunner } from './host.js';
 import { fingerprint, hash } from './safety.js';
 import type { CheckResult, Run } from './models.js';
 import type { Store } from './storage.js';
 
 export function unavailableCheck(check:Config['environment']['checks'][number]):string|undefined {
-  if(check.platform&&check.platform!=='linux-arm64')return `Unavailable: check requires ${check.platform}; the configured runner is Linux/arm64`;
+  const host=hostPlatform();
+  if(check.platform&&check.platform!==host)return `Unavailable: check requires ${check.platform}; this host runs ${host??`${process.platform}-${process.arch}`}`;
   return undefined;
 }
 
@@ -15,12 +17,12 @@ export function unavailableCheck(check:Config['environment']['checks'][number]):
 // evidence and are revalidated before reuse or approval.
 export function baselineKey(run:Run):string {
   return fingerprint({base:run.base,source:run.source,environment:run.config.environment,
-    limits:run.config.limits,build:run.buildHash});
+    limits:run.config.limits,build:run.buildHash,runner:hostRunner()});
 }
-const ResultSchema=z.strictObject({name:z.string(),argv:z.array(z.string()),image:z.string(),source:z.string(),
+const ResultSchema=z.strictObject({name:z.string(),argv:z.array(z.string()),runner:z.string(),source:z.string(),
   started:z.string(),ended:z.string(),code:z.number().int().nullable(),
   outcome:z.enum(['passed','failed','unavailable','skipped']),log:z.string(),logHash:z.string().regex(/^[a-f0-9]{64}$/),
-  cwd:z.literal('/workspace'),environmentHash:z.string().regex(/^[a-f0-9]{64}$/),
+  cwd:z.string().min(1),environmentHash:z.string().regex(/^[a-f0-9]{64}$/),
   required:z.boolean(),comparison:z.enum(['preexisting','introduced']).optional()});
 
 export function resultsComplete(run:Run,results:CheckResult[],source:string):boolean {
@@ -28,8 +30,8 @@ export function resultsComplete(run:Run,results:CheckResult[],source:string):boo
   return results.length===checks.length&&results.every((r,i)=>{
     const c=checks[i]!;
     return r.name===c.name&&fingerprint(r.argv)===fingerprint(c.argv)&&r.required===c.required
-      &&r.image===run.config.environment.image&&r.source===source
-      &&r.cwd==='/workspace'&&r.environmentHash===fingerprint(run.config.environment)
+      &&r.runner===hostRunner()&&r.source===source
+      &&r.cwd.length>0&&r.environmentHash===fingerprint(run.config.environment)
       &&(!unavailableCheck(c)||r.outcome==='unavailable'||r.outcome==='skipped')
       &&((r.outcome==='passed'&&r.code===0)||(r.outcome==='failed'&&r.code!==null&&r.code!==0)
         ||((r.outcome==='unavailable'||r.outcome==='skipped')&&r.code===null));

@@ -41,7 +41,7 @@ export class Store {
     this.ensureSlot(); this.save(run);
   }
   ensureSlot(except?: string): void {
-    const guests = new Set(this.unresolvedVMs().map(vm=>vm.run));
+    const guests = new Set(this.unresolvedWorkspaces().map(w=>w.run));
     if (this.all().some(r => r.id !== except && executing.has(r.status) && (r.status!=='awaiting_input'||guests.has(r.id)))) throw new Error('Another run holds the execution slot');
   }
   transition(run: Run, status: Status): void {
@@ -102,9 +102,11 @@ export class Store {
     for(const row of this.db.prepare('SELECT result FROM stages WHERE result IS NOT NULL').all() as {result:string}[])collect(JSON.parse(row.result));
     return hashes;
   }
-  recordVM(run: string, name: string, owner: string): void { this.db.prepare('INSERT INTO vms(name,run,owner) VALUES(?,?,?)').run(name,run,owner); }
-  stoppedVM(name: string): void { this.db.prepare('UPDATE vms SET stopped=1 WHERE name=?').run(name); }
-  unresolvedVMs(): {name:string;run:string;owner:string}[] { return this.db.prepare('SELECT name,run,owner FROM vms WHERE stopped=0').all() as {name:string;run:string;owner:string}[]; }
+  // Sandboxed stage workspaces, recorded before creation. The table keeps its
+  // historical name so an existing installation database stays readable.
+  recordWorkspace(run: string, name: string, owner: string): void { this.db.prepare('INSERT INTO vms(name,run,owner) VALUES(?,?,?)').run(name,run,owner); }
+  stoppedWorkspace(name: string): void { this.db.prepare('UPDATE vms SET stopped=1 WHERE name=?').run(name); }
+  unresolvedWorkspaces(): {name:string;run:string;owner:string}[] { return this.db.prepare('SELECT name,run,owner FROM vms WHERE stopped=0').all() as {name:string;run:string;owner:string}[]; }
   interrupt(): void {
     for (const run of this.all()) if (executing.has(run.status) && run.status !== 'awaiting_input') {
       run.previous = run.status; run.blocker = 'Supervisor interrupted; explicitly resume from the last saved candidate'; this.transition(run,'interrupted');

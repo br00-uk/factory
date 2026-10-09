@@ -1,5 +1,76 @@
 # Compatibility and current implementation
 
+## Revision 2026-10-09: host sandbox replaces the microVM engine
+
+The smol microVM engine was removed. Its policy switch (create under a
+registry allowlist, stop, set deny-all, start) stopped working on 7 October:
+the engine re-pulled the whole image at every restart and ECR's layer CDN had
+drifted outside the allowlist, so no run could reach its baseline. Rather
+than loosen that boundary, execution moved onto the host behind
+[`@anthropic-ai/sandbox-runtime`](https://github.com/anthropic-experimental/sandbox-runtime)
+0.0.79 (Seatbelt on macOS). Herdr became optional, and `factory init` /
+`/factory-init` were added so a repository is registered from inside it.
+
+| Component | Pin | Result |
+| --- | --- | --- |
+| Node | 26.5.0 | TypeScript build, `node:sqlite`, tests |
+| TypeScript | 7.0.2 | Strict build |
+| Pi SDK/CLI | 1.0.4 | Explicit resources/tools; factory-owned tools only; operator profile rejects host shell |
+| sandbox-runtime | 0.0.79 | Writes confined to the stage workspace and factory cache; `~/.pi`, `~/.ssh`, the factory state and the live checkout unreadable; network beyond loopback denied except per-command dependency allowlists (loopback listeners allowed for test servers); frozen source refused even after `chmod u+w` |
+| Herdr CLI/server | 0.9.1 | Optional; the owned workspace path is unchanged and tested only inside Herdr |
+| linear-tui | 0.13.0 | Hash-pinned binary; live JSON issue/context reads require authentication |
+
+What `make check` proves on this host (`tests/host.test.ts`,
+`tests/recovery.test.ts`): a sandboxed command cannot write outside its
+workspace, read a host credential, or open a TCP connection; the model's tool
+set is exactly the factory's (`read_file`, `list_files`, `search_files`,
+`ask_human`, plus `exec`/`write_file` for the implementer and `run_check` for
+the reviewer) with no Pi built-in tool; invalid-UTF-8 filenames cannot become
+a candidate; frozen source rejects writes while registered dependency
+directories stay writable; closing a workspace kills its process groups and
+deletes it; the fixture task passes both human gates with two bounded repairs;
+baseline exceptions and unavailable checks behave as before; a timed-out or
+over-long command ends the whole workspace and its background descendants;
+pause/cancel intent survives `SIGKILL` during a stuck cleanup and recovery
+stops the recorded process groups and removes the directory; a pending
+question survives pause/restart and explicit resume uses a fresh workspace.
+
+What is weaker than the VM design and deliberately so: this is a process
+boundary on a shared kernel. The host toolchain is trusted (checks run
+whatever `go`, `npm` or `cargo` is on PATH), the sandboxed process can read
+most of the filesystem except the denied paths, and a Seatbelt bypass would
+be a host compromise. The dependency bootstrap's allowlist is enforced by the
+runtime's HTTP/SOCKS proxies, so a tool that ignores proxy environment
+variables cannot reach the network at all rather than reaching it unfiltered.
+Linux hosts additionally need bubblewrap, socat and ripgrep and are untested.
+
+Three runtime details matter for anyone changing `src/host.ts`. The runtime's
+proxies filter with the process-wide allowlist, not the per-command override,
+so a dependency bootstrap widens the allowlist with `updateConfig` for that
+one command and restores it in `finally`. macOS TLS verification goes through
+`trustd`, which the Seatbelt profile hides; the bootstrap command alone gets
+it back (`enableWeakerNetworkIsolation`), execution never does, which is why
+Go could download modules but a sandboxed `curl` to the same host cannot. The
+wrapper returns a copy of the host environment and prefixes
+`env TMPDIR=/tmp/claude`; the factory spawns with its own explicit
+environment only (a test asserts a host canary variable is absent) and
+re-points `TMPDIR` at the workspace's private tmp. `/tmp/claude` is created
+if missing because the runtime's default write paths assume it.
+
+Process-group recovery after a supervisor crash reads the `pids.json` each
+workspace keeps and signals a recorded group only when the process started
+after the record was written, so a reused PID is never touched. A workspace
+that cannot be removed blocks execution.
+
+Not yet verified in this revision: a live model-driven run against a real
+repository (the fixture roles are scripted), live Linear reads, and the Herdr
+workspace path with the detached-supervisor refusal. The Migratory profile
+was validated to the point of registering: its gate is green offline since
+Migratory T057, and `factory init` runs it in a workspace as part of
+registration.
+
+## Historical record: microVM revision (6 October 2026)
+
 Validated on this Apple Silicon Mac on 6 October 2026:
 
 | Component | Pin | Result |

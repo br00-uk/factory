@@ -1,31 +1,26 @@
 # Local Factory
 
-A small TypeScript supervisor for human-approved software work inside Herdr.
-Pi agents use Linux microVM tools; the original checkout stays untouched. The
-output is a local candidate commit with check and review evidence for manual
-integration. Linear remains read-only.
+A small TypeScript supervisor for human-approved software work. Pi agents work
+in disposable copies of the repository, with every command confined by an
+OS-level sandbox; the original checkout stays untouched. The output is a local
+candidate commit with check and review evidence for manual integration. Linear
+remains read-only.
 
-The core implementation is under validation. A disposable task has passed
-planning, both approval gates, failed checks, two repairs, fresh verification,
-and independent review using scripted fixture agents. Real Pi SDK tools and
-smol execution are tested separately. A subscription-backed Pi planner has also
-inspected real Salesbook source in a VM and stopped at the plan gate, using a
-synthetic smoke task. Live Linear operation and the complete authenticated
-workspace are not yet verified. The optional Telegram
-module is implemented and tested with mocked HTTP, and remains disabled
-without explicit configuration. See [the specification](docs/specification.md).
-The Makefile/Herdr fixture also produces a local candidate through actual Pi
-operator commands, with offline Linear and scripted role agents.
+Run `/factory-init` from a Pi session inside the target repository and the
+factory registers it: detects its verification gate, proves the sandbox, runs
+the checks once, and starts the supervisor. Herdr is optional. See
+[the specification](docs/specification.md) and the
+[compatibility record](docs/compatibility.md) for what is verified.
 
 ## Process flow
 
 ```mermaid
 flowchart TD
-    Issue["Select one Linear issue<br/>Read-only intake"] --> Plan["Baseline checks and planning<br/>Planner session in a VM"]
+    Issue["Select one Linear issue<br/>Read-only intake"] --> Plan["Baseline checks and planning<br/>Planner session in a sandboxed workspace"]
     Plan --> PlanApproval{"Human approves<br/>the exact plan locally?"}
-    PlanApproval -->|Approve| Implement["Implement in an isolated VM"]
+    PlanApproval -->|Approve| Implement["Implement in a fresh sandboxed workspace"]
     PlanApproval -->|Request changes| Plan
-    Implement --> Verify["Verify the saved candidate<br/>Trusted checks in a fresh VM"]
+    Implement --> Verify["Verify the saved candidate<br/>Trusted checks in a fresh workspace"]
     Verify --> Checks{"Required checks accepted?"}
     Checks -->|Yes| Review["Independent reviewer session<br/>Frozen candidate and evidence"]
     Checks -->|Failures| RepairBudget{"Automatic repair rounds left?<br/>Maximum two per approved plan"}
@@ -50,103 +45,114 @@ cancelled runs cannot resume.
 ## Bring-up
 
 Use an Apple Silicon Mac with Node **26.5.x** (`.node-version` pins 26.5.0),
-npm, Python 3, Git/Xcode Command Line Tools, and a running **Herdr 0.9.1**
-session. Run `make up` from a Herdr pane. Setup downloads hash-pinned Herdr,
-linear-tui, and smol deletion CLIs locally; it does not replace your running Herdr server.
+npm, Python 3, Git/Xcode Command Line Tools, and a Pi sign-in (`pi`, then
+`/login`). Install once:
 
 ```sh
-make setup
-# Edit factory.local.json: repository, base ref, Linear org/team, model,
-# credential reference, image and required checks.
-.cache/tools/linear-tui auth login
-# Use existing Pi /login credentials, or set the named API-key environment reference.
-make doctor
-make up
+make setup      # pinned tools, build, and a sandbox proof on this host
+make install    # /factory-init and /factory in every Pi session; factory on PATH
 ```
 
-Setup preserves existing configuration, installs the lockfile, builds the
-package, and boots the pinned image to verify its helper runtime. Stop the
-factory with `make down` before reinstalling dependencies. Setup and checks
-are serialized so native VM assets cannot be replaced during a test.
+Then, inside any Git repository you want the factory to work on:
 
-Model/Linear authentication is explicit. No credentials are included in the
-sample. Disable linear-tui's control channel in its user configuration with
-`[agent] control = false`; `context --json` reads view snapshots independently.
-Use one active Linear account. Issue reads reject another organization/team.
-
-The sample image is Python 3.12 on arm64 Alpine, pinned through Docker's official
-public ECR mirror to avoid repeated Docker Hub anonymous pulls. A different repository needs
-a digest-pinned Linux/arm64 image containing `python3` and `sh`, with its tools
-already installed or an explicit `environment.toolchain` preparation command.
-`environment.dependencies` runs registered dependency argv after source import,
-using only its configured registry hosts. Preparation cannot change tracked
-source. Declared dependency directories must be absent from tracked source;
-they are recreated in each VM and excluded from candidates. Before a model or
-check runs, the VM restarts with all execution egress denied.
-`environment.env` supplies explicit guest values, never inherited host secrets.
-Registered dependency directories stay writable for tool caches during frozen
-review checks; tracked source stays read-only and those directories are excluded
-from candidates. Changes to configuration require `make down` and `make up`;
-the running supervisor rejects new work or continuation against changed settings.
-Registered checks must clean generated source files, because
-verification rejects a changed source tree. Tracked symlinks and Git submodules are
-explicitly unsupported in this initial implementation.
-
-[factory.salesbook.example.json](factory.salesbook.example.json) supplies a
-pinned Debian image, checksum-verified Go/Node archives, locked Go/npm dependency
-preparation and Go/web checks. Supply its repository and Pi credential paths.
-`make setup` verifies both tools and dependencies for the configured base. It
-does not start a task or invoke a model.
-
-`make up` opens supervisor, Linear, and factory Pi panes without starting a
-task. Repeating it reuses the recorded owned workspace. `make down` confirms
-the supervisor lock and recorded VMs are gone before closing owned panes;
-saved runs, questions, candidates and logs remain in the private `.factory/`
-directory. A startup failure returns nonzero rather than declaring readiness.
-
-From another repository, after the factory is installed, use a Herdr terminal:
-
-```sh
-export FACTORY_ROOT=/Users/dan/Developer/br00/factory
-node "$FACTORY_ROOT/dist/src/cli.js" register "$PWD"
-# Configure that repository's Linear scope, environment and checks in
-# "$FACTORY_ROOT/factory.local.json"; the Salesbook and Migratory profiles
-# are supplied above and below.
-make -C "$FACTORY_ROOT" setup
-make -C "$FACTORY_ROOT" validate
-"$FACTORY_ROOT/.cache/tools/linear-tui" auth login
-make -C "$FACTORY_ROOT" doctor
-make -C "$FACTORY_ROOT" up
+```text
+pi
+/factory-init
 ```
+
+`/factory-init` asks for the Linear team and organization the first time (or
+reads them from the existing configuration), detects the repository's own
+verification gate (`go build`/`go vet`/`go test -race` for a Go module, the
+`build`/`typecheck`/`lint`/`test` scripts of a `package.json`, `cargo
+build`/`cargo test`, `pytest`, or a Makefile `verify`/`check`/`test` target),
+registers the dependency download under an explicit registry allowlist,
+writes `factory.local.json` in this installation, proves the sandbox, runs
+the checks once against the current branch, and starts the supervisor in the
+background. The same thing from a shell is `factory init [path] --org <key>
+--team <TEAM>`; `--model provider/model-id` overrides the model detected from
+the Pi sign-in. Review `factory.local.json` afterwards: the detected checks
+are a starting point, not a judgement.
+
+Linear sign-in is separate and interactive: `.cache/tools/linear-tui auth
+login`. Until then `/factory-init` reports it as the next step; everything
+else works. Disable linear-tui's control channel in its user configuration
+with `[agent] control = false`; `context --json` reads view snapshots
+independently. Use one active Linear account. Issue reads reject another
+organization/team.
+
+## How execution is confined
+
+Each stage (planning, implementation, verification, review) gets a fresh
+workspace under `.factory/work/`: the base commit or saved candidate written
+from validated bytes, with its own small Git repository and no host Git
+metadata. Every model command and every registered check runs through
+[Anthropic's sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime)
+(`sandbox-exec` Seatbelt profiles on macOS, bubblewrap on Linux):
+
+- writes are confined to that workspace and the factory cache
+  (`.factory/cache`, for Go/npm/cargo caches via `${FACTORY_CACHE}`);
+- reads of `~/.ssh`, `~/.aws`, `~/.pi`, `~/.config`, keychains, the factory
+  state directory and the operator's live checkout are denied, so a `.env`
+  in the real repository is never visible to a model;
+- all network beyond the loopback interface is denied, except the registry
+  hosts named by `environment.dependencies.allowHosts` while that one
+  preparation command runs; loopback stays usable so test suites can start
+  local listeners and integration tests can probe a local dev stack;
+- during verification and review the workspace source is frozen: the sandbox
+  refuses writes to it independently of permission bits, while registered
+  dependency directories stay writable for tool caches.
+
+The model never receives Pi's built-in host tools. Its tools are factory-owned:
+`read_file`, `list_files`, `search_files` and (implementer only) `write_file`
+are path-confined to the workspace copy; `exec` (implementer) and `run_check`
+(reviewer, registered checks only) run inside the sandbox. Tools come from
+the host PATH, so the toolchain a check needs must be installed on this Mac.
+`environment.env` supplies explicit values, never inherited host secrets.
+Registered checks must clean generated source files, because verification
+rejects a changed source tree. Tracked symlinks and Git submodules are
+unsupported. A failed sandbox stops the stage; there is no unsandboxed
+fallback.
+
+This is a process-level boundary, not a virtual machine: a kernel or sandbox
+escape, or a tool that the host must trust anyway, is outside it. `setup` and
+`init` refuse to proceed when a probe can write outside the workspace, read a
+credential, or reach the network.
+
+## Operating the factory
+
+`make up` (or `factory up`) starts the supervisor detached, logging to
+`.factory/supervisor.log`; repeating it reuses the running one. Inside a
+Herdr pane the same command opens the full owned workspace instead
+(supervisor, linear-tui and a locked-down operator Pi pane). `make down`
+stops the supervisor, confirms recorded workspaces are gone, and preserves
+saved runs, questions, candidates and logs in the private `.factory/`
+directory. Changes to configuration require `down` then `up`; the running
+supervisor rejects new work or continuation against changed settings.
 
 `make validate` proves the registered profile before any issue exists: it
-snapshots the base commit, prepares the toolchain and dependencies in a fresh
-VM, runs every registered check with egress denied, and confirms the checks
-leave tracked source unchanged. It needs neither Linear, Herdr nor a model.
-Private evidence lands in `.factory/validation/<repository>-<uuid>.json`; it
-is not run evidence. A required check that fails here fails every run's
-baseline too, so fix the repository (or register an explicit
-`acceptBaselineFailure`) before `make up`.
+snapshots the base commit, prepares dependencies in a fresh sandboxed
+workspace, runs every registered check with egress denied, and confirms the
+checks leave tracked source unchanged. Private evidence lands in
+`.factory/validation/<repository>-<uuid>.json`; it is not run evidence. A
+required check that fails here fails every run's baseline too, so fix the
+repository (or register an explicit `acceptBaselineFailure`) first.
 
-[factory.migratory.example.json](factory.migratory.example.json) is the
-profile for the Migratory Go monolith: the same pinned Debian image, a
-checksum-verified Go 1.26.5 archive, `go mod download` under the Go proxy
-allowlist, and that repository's own gate as checks — `go build ./...`,
-`go vet ./...`, `go test -race ./...`. Its integration tests skip when
-Postgres, Temporal, S3 and Vault are unreachable, which is exactly the
-denied-egress guest. The `linear.team` key in that profile is a placeholder
-until the Migratory team exists in Linear; `doctor` does not check it, but
-issue intake rejects identifiers outside it.
+[factory.migratory.example.json](factory.migratory.example.json) and
+[factory.salesbook.example.json](factory.salesbook.example.json) are the
+profiles `factory init` produces for those repositories, kept as references.
+The `linear.team` key in the Migratory profile is a placeholder until that
+team exists in Linear; `doctor` does not check it, but issue intake rejects
+identifiers outside it.
 
-Create or select a Linear issue describing the change and acceptance criteria.
-In the factory Pi pane, `/factory plan current` starts planning that issue.
+Create or select a Linear issue describing the change and acceptance criteria,
+then `/factory plan ENG-42` (or `plan current` when linear-tui shows it).
 Ordinary chat text does not start a task; explicit factory commands bind
 approvals and execution to an issue. State stays in the factory installation;
-model work uses VM snapshots of the registered repository.
+model work uses snapshots of the registered repository.
 
 ## Working on an issue
 
-Use the Pi pane's `/factory` commands or the equivalent CLI:
+Use `/factory` commands from any Pi session with the extension installed (or the operator pane inside Herdr), or the equivalent `factory` CLI:
 
 ```text
 /factory plan current
@@ -162,7 +168,7 @@ Use the Pi pane's `/factory` commands or the equivalent CLI:
 /factory cancel F-0123456789ab
 ```
 
-Outside Pi: `node dist/src/cli.js status`, for example. `status` renders stored
+Outside Pi: `factory status`, for example. `status` renders stored
 plans, scope, baseline/check results, review, hashes, requests, logs and the
 actual diff (up to 64 KB, with its full local path). Candidate approval uses
 the **evidence hash** displayed as `candidate.evidenceHash`; the separate
@@ -174,10 +180,11 @@ a quoted `git fetch` command. Inspect `git show FETCH_HEAD`, select your intende
 destination branch, and integrate manually (for example, `git cherry-pick FETCH_HEAD`).
 Check the destination before integrating and publish/merge yourself.
 
-No model tool can approve, publish, merge, contact Linear, or execute host
-commands. The operator Pi profile accepts `/factory` commands and disables
-model requests, filesystem tools, MCP/discovered extensions, and `!` host
-shell execution. Use `/factory steer` or a recorded answer to communicate
+No model tool can approve, publish, merge, contact Linear, or execute
+unsandboxed host commands. Slash commands are not model tools: a model in your
+own Pi session cannot submit an approval. The Herdr operator profile goes
+further and disables model requests, filesystem tools, MCP/discovered
+extensions, and `!` host shell execution. Use `/factory steer` or a recorded answer to communicate
 with an executing agent.
 
 All free-form instructions retain the current path scope, checks,
@@ -223,14 +230,14 @@ its result remains visible. At least one required verification method is needed,
 including an explicit alternative when the repository has no test suite.
 Required unavailable checks always block a run. Shell exit codes 126/127 are
 reported as unavailable commands rather than test failures.
-Checks default to Linux/arm64. Set `"platform": "darwin-arm64"` (or another
-supported configuration value) to record a requirement for a different platform;
-the first-release runner reports it as unavailable without executing its argv.
+Checks run on this host. Set `"platform": "linux-x64"` (or another supported
+value) to record a requirement for a different platform; a check whose platform
+is not this host is reported as unavailable without executing its argv.
 `make doctor` rejects required checks for unsupported platforms. A baseline
 failure exception cannot waive unavailable evidence.
-If guest execution is lost, remaining checks are explicitly recorded as skipped;
+If workspace execution is lost, remaining checks are explicitly recorded as skipped;
 completed results and private logs survive the interruption. Each result records
-its working directory and environment identity as well as source/image and argv.
+its working directory, runner and environment identity as well as source and argv.
 
 A known preexisting failure can have an explicit acceptance policy in the
 trusted check profile:
@@ -246,7 +253,7 @@ The candidate must either pass that check or match the baseline's nonzero exit
 code and output hash exactly. A matched failure stays reported as failed, with
 `comparison: "preexisting"`; independent review still checks every approved
 acceptance criterion. A changed failure remains blocking. The factory keeps
-one recent baseline keyed by base/source, environment/toolchain, check profile,
+one recent baseline keyed by base/source, environment, check profile, runner,
 limits and build, and verifies its private log hashes before reuse. Unavailable
 baseline evidence is retried rather than cached for reuse.
 
@@ -286,22 +293,23 @@ Live bot creation, authentication and messaging have not been performed here.
 ## Recovery and verification
 
 Interruptions stop work. On restart, unfinished stages become interrupted,
-old owned VMs are inspected/deleted, and nothing resumes automatically.
+processes recorded in old workspaces are stopped and the workspaces deleted,
+and nothing resumes automatically.
 Answer a saved pending question, then explicitly resume. Paused and cancelled
-runs retain their state. Resumption uses a fresh VM from the last completely
+runs retain their state. Resumption uses a fresh workspace from the last completely
 exported candidate. Unexported work is lost. Material task/base/configuration
 changes, or a changed factory build, require explicit revision/reapproval.
 
 ```sh
 make help
-make check          # type checking, durable gates, real VM/Pi boundary, fixture
-make compatibility  # real VM/Pi boundary and fixture only; no paid model calls
-make validate       # registered checks on the base commit in a fresh VM; no model
-node dist/src/cli.js cleanup  # remove unreferenced source artifacts while idle
+make check          # type checking, durable gates, real sandbox/Pi boundary, fixture
+make validate       # registered checks on the base commit in a fresh workspace; no model
+factory cleanup     # remove unreferenced source artifacts while idle
 ```
 
-Tests use temporary Git repositories and private databases. The fixture's
-scripted roles do not establish model quality or live account compatibility.
+Tests use temporary Git repositories, private factory roots and real sandboxed
+workspaces. The fixture's scripted roles do not establish model quality or live
+account compatibility. The Herdr workspace test runs only inside a Herdr pane.
 See [compatibility findings](docs/compatibility.md) for verified versions,
 remaining checks, and implementation limits.
 The [acceptance record](docs/acceptance.md) maps the specification's required

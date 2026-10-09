@@ -36,7 +36,7 @@ export const ReviewSchema = z.strictObject({ findings: z.array(z.strictObject({
   passed: z.boolean(), evidence: z.string().min(1).max(4000) })).min(1).max(30) });
 export type Review = z.infer<typeof ReviewSchema>;
 export interface CheckResult {
-  name: string; argv: string[]; image: string; source: string; started: string; ended: string;
+  name: string; argv: string[]; runner: string; source: string; started: string; ended: string;
   code: number | null; outcome: 'passed' | 'failed' | 'unavailable' | 'skipped'; log: string;
   required: boolean; logHash: string;
   cwd:string; environmentHash:string;

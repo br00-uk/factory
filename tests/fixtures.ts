@@ -1,4 +1,4 @@
-import { ConfigSchema, DEFAULT_IMAGE, type Config } from '../src/config.js';
+import { ConfigSchema, type Config } from '../src/config.js';
 import { configHash } from '../src/config.js';
 import { fingerprint } from '../src/safety.js';
 import type { Run } from '../src/models.js';
@@ -6,8 +6,8 @@ import type { Run } from '../src/models.js';
 export function fixtureConfig(repository:string):Config {
   return ConfigSchema.parse({repository,baseRef:'main',linear:{organization:'factory-fixture',team:'ENG'},
     model:{provider:'fixture-no-api',id:'fixture-no-api',apiKeyEnv:'FACTORY_TEST_UNUSED_KEY',maxOutputTokens:4096},budgetUsd:5,
-    environment:{image:DEFAULT_IMAGE,checks:[{name:'tests',argv:['python3','-I','-S','-B','check.py'],timeoutSeconds:10}]},
-    limits:{cpus:1,memoryMb:512,diskGb:1,stageSeconds:120,commandSeconds:20,maxOutputBytes:262144,
+    environment:{checks:[{name:'tests',argv:['python3','-I','-S','-B','check.py'],timeoutSeconds:10}]},
+    limits:{stageSeconds:120,commandSeconds:20,maxOutputBytes:262144,
       maxFileBytes:2097152,maxArtifactBytes:8388608,maxTurns:10}});
 }
 export const issue={id:'9a0e0000-0000-4000-8000-000000000001',identifier:'ENG-42',title:'Return the expected value',

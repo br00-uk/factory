@@ -10,6 +10,19 @@ The first useful flow is:
 
 Agents work autonomously between the two approval gates, within the approved scope. Deterministic code enforces those gates, tool permissions, budgets, and verification requirements. Orchestration and repository execution stay on this machine; hosted model APIs and Linear reads are allowed.
 
+## Revision note (2026-10-09)
+
+The first release ran every model tool and check in a smol microVM. That
+engine was removed when its stop/deny-all/restart policy switch began
+re-pulling images at every restart (see docs/compatibility.md). Execution now
+happens on the host inside Anthropic's `sandbox-runtime` (Seatbelt on macOS,
+bubblewrap on Linux): writes confined to a disposable stage workspace and the
+factory cache, credentials and the live checkout unreadable, network denied
+except an explicit dependency allowlist. Herdr is optional, the supervisor can
+run detached, and `factory init` / `/factory-init` register a repository from
+inside it. Wherever the text below says "VM" or "guest", read "sandboxed
+workspace"; the approval, evidence and recovery contracts are unchanged.
+
 ## First release boundary
 
 | Decision | First release |

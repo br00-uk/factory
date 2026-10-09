@@ -2,7 +2,7 @@
 
 ## Source of truth
 
-Implement [docs/specification.md](docs/specification.md). Read it before starting implementation; revisit the relevant sections for subsequent changes. The spec defines the product scope, trust boundaries, Makefile contract, and milestone acceptance criteria. [docs/linear-tui-security-review.md](docs/linear-tui-security-review.md) records upstream risks; the spec's read-only first-release boundary controls adoption.
+Implement [docs/specification.md](docs/specification.md) (its 2026-10-09 revision note replaces the microVM with a host sandbox). Read it before starting implementation; revisit the relevant sections for subsequent changes. The spec defines the product scope, trust boundaries, Makefile contract, and milestone acceptance criteria. [docs/linear-tui-security-review.md](docs/linear-tui-security-review.md) records upstream risks; the spec's read-only first-release boundary controls adoption.
 
 Inspect the current files before assuming commands or components exist. The core implementation and Makefile now exist; [docs/compatibility.md](docs/compatibility.md) distinguishes fixture and VM checks from live integrations still needing validation. Keep guidance accurate as implementation lands, and distinguish proposed behavior from verified behavior.
 
@@ -11,13 +11,13 @@ Inspect the current files before assuming commands or components exist. The core
 - Use one TypeScript package, one foreground supervisor, and ordinary modules following the spec's layout.
 - Support one operator, repository, Linear organization, and executing run. Pi role sessions run sequentially inside the supervisor.
 - Implement one explicit transition table and concrete functions. Introduce an abstraction only for a current need; keep adapter wrappers small.
-- Use SQLite for run state/results and references, Pi for transcripts, and files for artifacts. Recovery stops interrupted work and explicitly reprovisions from saved candidates.
+- Use SQLite for run state/results and references, Pi for transcripts, and files for artifacts. Recovery stops interrupted work (and the process groups recorded in old workspaces) and explicitly reprovisions from saved candidates.
 - Keep Linear read-only and publication/merge manual. Telegram is optional, with in-process long polling and local approvals.
 - Defer schedulers, queue collection, outboxes, automatic reattachment, remote providers, multiple packages, custom dashboards, and general workflow/connector frameworks.
 
 ## Build in useful slices
 
-1. **Compatibility:** choose and pin a compatible runtime/toolchain and Pi/smol/linear-tui artifacts. Prove VM execution, tool forwarding, transfer integrity, confirmed termination, and scoped JSON reads. The spec's source revisions are research baselines, not a tested version matrix.
+1. **Compatibility:** choose and pin a compatible runtime/toolchain and Pi/sandbox-runtime/linear-tui artifacts. Prove sandboxed execution, tool confinement, transfer integrity, confirmed termination, and scoped JSON reads. The spec's source revisions are research baselines, not a tested version matrix.
 2. **One task:** wire issue selection, planning, plan approval, isolated implementation, fresh verification, independent review/repair, and approval of a local candidate inside Herdr.
 3. **Usable operation:** finish bounded repair, human answers/steering, pause/cancel, durable stage results, explicit restart, and simple cleanup.
 4. Add the optional Telegram module after the local human-input handlers work.
@@ -26,10 +26,10 @@ Complete the requested slice and its relevant acceptance checks. Prefer a small 
 
 ## Makefile is the entry point
 
-Provide the root targets specified in the spec: `help`, `setup`, `doctor`, `up`, `down`, and `check`. Recipes call package commands or small scripts; business logic stays in TypeScript.
+Provide the root targets specified in the spec: `help`, `setup`, `doctor`, `up`, `down`, and `check`, plus `install`, `init` and `validate`. Recipes call package commands or small scripts; business logic stays in TypeScript.
 
-- `make setup` installs/builds pinned dependencies, prepares the image, and creates sample configuration/private directories repeatably without overwriting settings.
-- `make up` starts the complete configured Herdr workspace, checks supervisor readiness, and reuses an existing owned installation. It does not start a task or resume interrupted work.
+- `make setup` installs/builds pinned dependencies, proves the host sandbox, and creates sample configuration/private directories repeatably without overwriting settings.
+- `make up` starts the supervisor (detached, or the complete Herdr workspace from a Herdr pane), checks readiness, and reuses an existing owned installation. It does not start a task or resume interrupted work.
 - `make down` confirms owned execution stopped and preserves evidence, paused states, and pending human requests.
 - `make doctor` reports actionable configuration/capability failures without exposing secrets.
 - `make check` runs type checking and meaningful automated checks for the implemented milestone.
@@ -38,7 +38,7 @@ Add real targets as their behavior is implemented. An unimplemented or unavailab
 
 ## Preserve the boundaries
 
-- Every model filesystem/process tool operates in the assigned VM. Keep credentials, original checkouts, shared Git metadata, and host control sockets outside guests. Never fall back to host tools.
+- Every model filesystem/process tool operates in the assigned sandboxed workspace. Keep credentials, original checkouts, shared Git metadata, and host control sockets unreadable from it. Never fall back to unsandboxed execution or Pi's built-in host tools.
 - Load only explicit trusted host resources/tools; target-repository instructions and executable configuration cannot change authority. Compare active tools with each role's expected list before a turn.
 - Human approvals bind the actual plan/candidate and evidence. A changed candidate reruns all required checks and review. An agent cannot approve itself.
 - Trusted code runs checks in a fresh environment; review uses a separate session against frozen source. Baselines distinguish preexisting failures, and unavailable required evidence stays unavailable.

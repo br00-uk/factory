@@ -9,6 +9,7 @@ import { baselineAccepted, cachedBaseline, saveBaseline, verificationAccepted, v
 import { hash, fingerprint, privateDirectory } from '../src/safety.js';
 import { fixtureConfig, fixtureRun } from './fixtures.js';
 import type { CheckResult } from '../src/models.js';
+import { hostRunner } from '../src/host.js';
 
 test('baseline reuse requires the same source/environment/check inputs and intact private logs',async()=>{
   const root=await mkdtemp(join(tmpdir(),'factory-baseline-'));await privateDirectory(join(root,'.factory'));
@@ -16,16 +17,16 @@ test('baseline reuse requires the same source/environment/check inputs and intac
   const log=join(root,'.factory/runs',run.id,'baseline.log');await privateDirectory(join(root,'.factory/runs',run.id));
   try{
     await writeFile(log,'ok',{mode:0o600});
-    run.baseline=[{name:'tests',argv:run.config.environment.checks[0]!.argv,image:run.config.environment.image,
+    run.baseline=[{name:'tests',argv:run.config.environment.checks[0]!.argv,runner:hostRunner(),
       source:run.source,started:run.created,ended:run.created,code:0,outcome:'passed',required:true,log,logHash:hash('ok'),
-      cwd:'/workspace',environmentHash:fingerprint(run.config.environment)}];
+      cwd:'/tmp/factory-fixture/src',environmentHash:fingerprint(run.config.environment)}];
     saveBaseline(store,run);assert.deepEqual(await cachedBaseline(store,root,run),run.baseline);
     for(const change of [
       (r:typeof run)=>{r.base='c'.repeat(40);},
       (r:typeof run)=>{r.source='c'.repeat(64);},
       (r:typeof run)=>{r.config.environment.env.CI='changed';},
       (r:typeof run)=>{r.config.environment.checks[0]!.argv=['different'];},
-      (r:typeof run)=>{r.config.environment.image='other@sha256:'+'c'.repeat(64);},
+      (r:typeof run)=>{r.config.environment.sandbox.denyRead=['/other'];},
       (r:typeof run)=>{r.buildHash='d'.repeat(64);},
     ]){
       const changed=structuredClone(run);change(changed);assert.equal(await cachedBaseline(store,root,changed),undefined);
@@ -40,9 +41,9 @@ test('baseline reuse requires the same source/environment/check inputs and intac
 test('only explicit baseline exceptions accept matching failures; required unavailable or missing evidence never passes',()=>{
   const config=fixtureConfig('/tmp');
   const run=fixtureRun(config);
-  const result:CheckResult={name:'tests',argv:config.environment.checks[0]!.argv,image:config.environment.image,
+  const result:CheckResult={name:'tests',argv:config.environment.checks[0]!.argv,runner:hostRunner(),
     source:run.source,started:run.created,ended:run.created,code:1,outcome:'failed',required:true,log:'/tmp/log',logHash:hash('known defect'),
-    cwd:'/workspace',environmentHash:fingerprint(config.environment)};
+    cwd:'/tmp/factory-fixture/src',environmentHash:fingerprint(config.environment)};
   run.baseline=[result];assert.equal(baselineAccepted(run),false);
   config.environment.checks[0]!.acceptBaselineFailure={reason:'Existing unrelated defect; preserve its exact failure output.'};
   result.environmentHash=fingerprint(config.environment);

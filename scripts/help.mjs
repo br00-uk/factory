@@ -1,13 +1,14 @@
 console.log(`Local Factory — Apple Silicon macOS, Node 26.5.x, Python 3, Git
-  make setup         Install pinned dependencies/tools and prepare the image
+  make setup         Install pinned tools, build, and prove the host sandbox
+  make install       Link /factory-init and /factory into every Pi session, and factory onto PATH
+  make init REPO=…   Register a repository: detect checks, validate them, start the supervisor
   make doctor        Validate factory.local.json, credentials and capabilities
-  make validate      Run the registered checks against the base commit in a fresh VM
-  make up            Open the complete owned Herdr workspace (no task starts)
-  make down          Confirm supervisor/guest execution stopped; preserve state
+  make validate      Run the registered checks against the base commit in a fresh sandboxed workspace
+  make up            Start the supervisor (detached), or the full Herdr workspace from a Herdr pane
+  make down          Stop the supervisor and recorded workspace execution; preserve state
   make check         Type checking and boundary/workflow tests
-  make compatibility Real smol/Pi/tool compatibility checks (no paid model)
 
-After setup, edit factory.local.json and authenticate Linear explicitly.
-Use model.authFile for a Pi subscription (budgetUsd: null), or supply the API
-key named by model.apiKeyEnv. Keep credentials outside the target repository.
-See README.md.`);
+Fastest path: make setup && make install, then in the target repository run
+pi and /factory-init. Model credentials come from Pi /login (model.authFile)
+or the API key named by model.apiKeyEnv; Linear needs .cache/tools/linear-tui
+auth login. Keep credentials outside the target repository. See README.md.`);

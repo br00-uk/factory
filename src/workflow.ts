@@ -5,7 +5,7 @@ import { configHash, paths, type Config } from './config.js';
 import { atomicWrite, fingerprint, hash, relativePath, clean } from './safety.js';
 import { changedPaths, enforceScope, readSnapshot, scanSecrets } from './artifacts.js';
 import { baseCommit, commitCandidate, snapshotRepository } from './git.js';
-import { Guest, stopRecordedVMs } from './smol.js';
+import { Workspace, stopRecordedWorkspaces, hostRunner } from './host.js';
 import { runAgent, trustedLoader } from './pi.js';
 import type { Store } from './storage.js';
 import type { Linear } from './linear.js';
@@ -21,7 +21,7 @@ export function planFingerprint(run: Run): string {
 class StageLimit extends Error {}
 export class Workflow {
   stopping=false;
-  active: {run:Run;controller:AbortController;done:Promise<void>;guest?:Guest | undefined;session?:AgentSession | undefined} | undefined;
+  active: {run:Run;controller:AbortController;done:Promise<void>;guest?:Workspace | undefined;session?:AgentSession | undefined} | undefined;
   private answerPending: {id:string;resolve:(answer:string)=>void;reject:(error:Error)=>void} | undefined;
   private waitingMs=0;
   private waitingSince:number|undefined;
@@ -62,7 +62,7 @@ export class Workflow {
     if(this.stopping)throw new Error('Supervisor stopping');
     if (this.active) throw new Error('A stage is still stopping or executing');
     await this.configurationCurrent();
-    this.store.ensureSlot(); await stopRecordedVMs(this.store,this.owner);
+    this.store.ensureSlot(); await stopRecordedWorkspaces(this.store,this.owner);
     const issue = input === 'current' ? await this.linear.current() : await this.linear.issue(input);
     const base = await baseCommit(this.config);
     const snapshot = await snapshotRepository(this.config,base,paths(this.root).artifacts);
@@ -90,7 +90,7 @@ export class Workflow {
       }
     }).finally(async () => {
       try { await active.guest?.close(); }
-      catch (e) { run.blocker = `Guest termination unconfirmed: ${(e as Error).message}`; this.store.save(run); }
+      catch (e) { run.blocker = `Workspace termination unconfirmed: ${(e as Error).message}`; this.store.save(run); }
       this.active = undefined;
     });
   }
@@ -98,31 +98,25 @@ export class Workflow {
   private progress(run:Run,text:string):void {
     run.progress=text;this.store.save(run);console.log(clean(`${run.id}: ${run.status} — ${text}`));
   }
-  private async guest(run: Run, signal: AbortSignal): Promise<Guest> {
+  private async guest(run: Run, signal: AbortSignal): Promise<Workspace> {
     this.check(signal);
-    await stopRecordedVMs(this.store,this.owner);
-    this.progress(run,'Preparing pinned image before source transfer');
-    const guest = await Guest.create(run.config,this.owner,run.id,this.store);
+    await stopRecordedWorkspaces(this.store,this.owner);
+    this.progress(run,'Creating a sandboxed workspace');
+    const guest = await Workspace.create(run.config,this.owner,run.id,this.store,this.root);
     this.active!.guest = guest;
     this.check(signal);
     const source = run.status==='planning' ? run.source : (run.candidate?.hash ?? run.source);
-    this.progress(run,'Importing source with egress denied');
+    this.progress(run,'Importing source into the sandbox (egress denied)');
     await guest.import(await readSnapshot(paths(this.root).artifacts,source,run.config.limits));
     if(run.config.environment.dependencies){
-      this.progress(run,'Preparing registered dependencies before locking egress');
+      this.progress(run,'Preparing registered dependencies under their registry allowlist');
       await guest.prepareDependencies();
       this.check(signal);
       const prepared=await guest.export(paths(this.root).artifacts);
       if(prepared.hash!==source)throw new Error('Dependency preparation changed source outside registered dependency directories');
-      // export freezes source; restore worker ownership before implementation
-      // or checks that write temporary outputs. Verification freezes it again.
-      await guest.root(['python3','-I','-S','-c',`import os,stat
-for d,ds,fs in os.walk('/workspace',followlinks=False):
- os.chown(d,1000,1000);os.chmod(d,0o755)
- for f in fs:
-  p=os.path.join(d,f);s=os.lstat(p)
-  if stat.S_ISLNK(s.st_mode): os.chown(p,1000,1000,follow_symlinks=False)
-  else: os.chown(p,1000,1000);os.chmod(p,0o755 if s.st_mode&0o111 else 0o644)`]);
+      // export freezes source; make it writable again before implementation or
+      // checks that write temporary outputs. Verification freezes it again.
+      await guest.unfreeze();
     }
     if(guest.preparation.length){
       const log=join(paths(this.root).state,'runs',run.id,`${run.status}-preparation-${crypto.randomUUID()}.log`);
@@ -131,7 +125,7 @@ for d,ds,fs in os.walk('/workspace',followlinks=False):
     }
     return guest;
   }
-  private async checks(run: Run, guest: Guest, source: string, signal: AbortSignal): Promise<CheckResult[]> {
+  private async checks(run: Run, guest: Workspace, source: string, signal: AbortSignal): Promise<CheckResult[]> {
     const results: CheckResult[] = [];
     if(run.status==='planning')run.baseline=results;
     else if(run.candidate)run.candidate.checks=results;
@@ -139,7 +133,7 @@ for d,ds,fs in os.walk('/workspace',followlinks=False):
       const started = new Date().toISOString();
       this.progress(run,`Running registered check: ${check.name}`);
       let code: number | null = null; let output = ''; let outcome: CheckResult['outcome'] = 'unavailable';
-      if(signal.aborted||guest.stopped){outcome='skipped';output=signal.aborted?'Not run: stage stopped':'Not run: preceding guest execution unavailable';}
+      if(signal.aborted||guest.stopped){outcome='skipped';output=signal.aborted?'Not run: stage stopped':'Not run: preceding workspace execution unavailable';}
       else if(unavailableCheck(check)){output=unavailableCheck(check)!;}
       else try {
         const result = await guest.execute(check.argv,{timeout:check.timeoutSeconds,signal});
@@ -149,9 +143,9 @@ for d,ds,fs in os.walk('/workspace',followlinks=False):
       } catch (e) { output = clean((e as Error).message); }
       const log = join(paths(this.root).state,'runs',run.id,`${run.status}-${results.length}-${crypto.randomUUID()}.log`);
       await atomicWrite(log,output);
-      results.push({name:check.name,argv:check.argv,image:run.config.environment.image,source,started,
+      results.push({name:check.name,argv:check.argv,runner:hostRunner(),source,started,
         ended:new Date().toISOString(),code,outcome,log,logHash:hash(output),required:check.required,
-        cwd:'/workspace',environmentHash:fingerprint(run.config.environment),
+        cwd:guest.src,environmentHash:fingerprint(run.config.environment),
         ...(run.status==='verifying'&&outcome==='failed'?{comparison:matchingFailure(run.baseline[results.length],{code,outcome,logHash:hash(output)})?'preexisting' as const:'introduced' as const}:{})});
       this.store.save(run);
     }
@@ -172,7 +166,7 @@ for d,ds,fs in os.walk('/workspace',followlinks=False):
     try{return await new Promise<string>((resolve,reject)=>{this.answerPending={id:request.id,resolve,reject};if(signal.aborted)abort();});}
     finally{signal.removeEventListener('abort',abort);this.waitingMs+=Date.now()-started;this.waitingSince=undefined;}
   }
-  private async agentTurn(run: Run, guest: Guest, role: 'planner'|'implementer'|'reviewer', signal: AbortSignal, extra: unknown): Promise<string> {
+  private async agentTurn(run: Run, guest: Workspace, role: 'planner'|'implementer'|'reviewer', signal: AbortSignal, extra: unknown): Promise<string> {
     this.progress(run,`Running ${role} session`);
     return this.agent(role,guest,run,this.store,paths(this.root).sessions,JSON.stringify({issue:run.issue,
       plan:run.plan,registeredChecks:run.config.environment.checks,baseline:run.baseline,
@@ -194,7 +188,7 @@ for d,ds,fs in os.walk('/workspace',followlinks=False):
         const elapsed=activeMs()/1000;
         if(elapsed>=run.config.limits.stageSeconds||(run.activeSeconds??0)+elapsed>=run.config.limits.activeSeconds)budget.abort();
       },100);
-      let guest: Guest | undefined;
+      let guest: Workspace | undefined;
       try {
         guest = await this.guest(run,signal);
         if (stage === 'planning') {
@@ -250,7 +244,7 @@ for d,ds,fs in os.walk('/workspace',followlinks=False):
           if (!verificationAccepted(run)) {
             await guest.close(); this.active!.guest=undefined; this.check(signal);this.repair(run);
           } else {
-            // Keep the fresh verification VM for reviewer checks, with root-owned source.
+            // Keep the fresh verification workspace for reviewer checks, with frozen source.
             this.store.transition(run,'reviewing');
             await this.review(run,guest,signal);
             this.check(signal); await guest.close(); this.active!.guest=undefined;
@@ -277,7 +271,7 @@ for d,ds,fs in os.walk('/workspace',followlinks=False):
     if (run.repairCount >= 2) throw new Error('Two automatic repair rounds exhausted; operator decision required');
     run.repairCount++; this.store.transition(run,'repairing');
   }
-  private async review(run: Run, guest: Guest, signal: AbortSignal): Promise<void> {
+  private async review(run: Run, guest: Workspace, signal: AbortSignal): Promise<void> {
     if(!verificationAccepted(run))throw new Error('Required verification evidence is missing');
     await verifyCheckLogs(this.root,run,run.baseline);
     await verifyCheckLogs(this.root,run,run.candidate!.checks);
@@ -307,7 +301,7 @@ for d,ds,fs in os.walk('/workspace',followlinks=False):
     const version=this.version(run);
     await this.context(run);
     if (this.active) throw new Error('Stage cleanup has not finished');
-    await stopRecordedVMs(this.store,this.owner);
+    await stopRecordedWorkspaces(this.store,this.owner);
     this.unchanged(run,version);
     if (gate==='candidate') {
       if(!this.store.approved(run))throw new Error('Plan approval revoked; revise before candidate approval');
@@ -343,7 +337,7 @@ for d,ds,fs in os.walk('/workspace',followlinks=False):
       try{
         await Promise.race([
           (async()=>{await active.guest?.close();await active.done;})(),
-          new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error('Guest termination is unconfirmed after the shutdown grace period; execution remains blocked')),10_000);}),
+          new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error('Workspace termination is unconfirmed after the shutdown grace period; execution remains blocked')),10_000);}),
         ]);
       }catch(e){run.blocker=clean((e as Error).message);this.store.save(run);throw e;}
       finally{clearTimeout(timer);}
@@ -363,7 +357,7 @@ for d,ds,fs in os.walk('/workspace',followlinks=False):
     if (!['paused','interrupted','failed','awaiting_input'].includes(run.status)) throw new Error('Run cannot resume');
     if (this.active) throw new Error('Execution already active');
     if (this.store.requests(run.id).some(q=>q.pending)) throw new Error('Resolve the pending question before explicitly resuming');
-    await this.context(run);this.store.ensureSlot(run.id);await stopRecordedVMs(this.store,this.owner);
+    await this.context(run);this.store.ensureSlot(run.id);await stopRecordedWorkspaces(this.store,this.owner);
     this.unchanged(run,version);
     if(this.active||this.stopping)throw new Error('Supervisor is executing or stopping');
     const stage = run.previous ?? (run.plan ? 'implementing' : 'planning');
@@ -379,7 +373,7 @@ for d,ds,fs in os.walk('/workspace',followlinks=False):
     const version=this.version(run);
     if (!['awaiting_plan_approval','awaiting_merge_approval','failed','paused','interrupted'].includes(run.status) || this.active) throw new Error('Pause or wait for an approval gate before requesting changes');
     await this.configurationCurrent();
-    this.store.ensureSlot(run.id);await stopRecordedVMs(this.store,this.owner);
+    this.store.ensureSlot(run.id);await stopRecordedWorkspaces(this.store,this.owner);
     const fresh = await this.linear.issue(run.issue.identifier);
     if(fresh.id!==run.issue.id) throw new Error('Issue identity changed; cannot revise this run');
     if(run.organizationId){
